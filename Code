@@ -1,0 +1,214 @@
+package CPS3250;
+
+import java.util.*;
+import java.text.DecimalFormat;
+
+public class MultiTenantScheduler {
+
+    static class Task {
+        int id;
+        int tenantId;
+        int cpuDemand;
+        public Task(int id, int tenantId, int cpuDemand) {
+            this.id = id;
+            this.tenantId = tenantId;
+            this.cpuDemand = cpuDemand;
+        }
+    }
+
+   
+    static class Tenant {
+        int id;
+        double weight;
+        Queue<Task> queue = new LinkedList<>();
+        public Tenant(int id, double weight) {
+            this.id = id;
+            this.weight = weight;
+        }
+    }
+
+   
+    static class Scheduler {
+        List<Tenant> tenants;
+        Random rng;
+        public Scheduler(List<Tenant> tenants, Random rng) {
+            this.tenants = tenants;
+            this.rng = rng;
+        }
+        public Task selectTask() {
+            List<Tenant> active = new ArrayList<>();
+            for (Tenant t : tenants) {
+                if (!t.queue.isEmpty()) active.add(t);
+            }
+            if (active.isEmpty()) return null;
+            if (active.size() == 1) {
+                return active.get(0).queue.poll();
+            }
+            double sumW = 0.0;
+            for (Tenant t : active) sumW += t.weight;
+            double r = rng.nextDouble() * sumW;
+            double acc = 0.0;
+            for (Tenant t : active) {
+                acc += t.weight;
+                if (r <= acc) {
+                    return t.queue.poll();
+                }
+            }
+            return active.get(active.size() - 1).queue.poll();
+        }
+
+     
+        public double[] getWeights() {
+            double[] w = new double[tenants.size()];
+            for (int i = 0; i < tenants.size(); i++) w[i] = tenants.get(i).weight;
+            return w;
+        }
+    }
+
+    static void normalizeWeights(List<Tenant> tenants) {
+        double s = 0.0;
+        for (Tenant t : tenants) s += t.weight; 
+        if (s == 0) { 
+        	double equal = 1.0 / tenants.size(); 
+        for (Tenant t : tenants) t.weight = equal;
+        return;
+        } 
+        else
+        for (Tenant t : tenants) t.weight /= s;
+        }
+    
+    public static void adjustWeightsSmoothed(List<Tenant> tenants,
+            List<Integer> windowUsage,
+            double alpha, double[] initialWeight) {
+
+            double eps = 1e-9;
+            int n = tenants.size();
+
+            double[] oldW = new double[n];
+            double[] actualUsage = new double[n];
+            for (int i = 0; i < n; i++) {
+
+                 oldW[i] = tenants.get(i).weight;
+                 actualUsage[i] = windowUsage.get(i);  // Actual number of executions within the window
+           }
+
+//  Compute candidate[i] 
+            double[] candidate = new double[n];
+            for (int i = 0; i < n; i++) {
+               candidate[i] = oldW[i] / (actualUsage[i]+eps);
+             }
+
+// Normalize candidate so that the total sum becomes 1
+           double sum = 0.0;
+           for (double c : candidate) sum += c;
+           for (int i = 0; i < n; i++) candidate[i] /= sum;
+
+//  Smoothed update: newW = (1 - alpha) * initialWeight + alpha * candidate 
+               for (int i = 0; i < n; i++) {
+                    double newW = (1.0 - alpha) * initialWeight[i] + alpha * candidate[i];
+                    tenants.get(i).weight = newW;
+               }
+//Normalize final weights again 
+          double total = 0.0;
+          for (Tenant t : tenants) total += t.weight;
+          for (Tenant t : tenants) t.weight /= total;
+}
+
+
+    static double computeFairness(List<Integer> shares) {
+        int n = shares.size();
+        double sum = 0.0, sumSq = 0.0;
+        for (int x : shares) { sum += x; sumSq += (double)x * x; }
+        if (sum == 0) return 0.0;
+        return (sum * sum) / (n * sumSq);
+    } 
+ 
+    static void printSummary(List<Tenant> tenants, List<Integer> usage, int executed, int totalTimeSlices) {
+        DecimalFormat df = new DecimalFormat("0.000");
+        System.out.println("=== result ===");
+        for (int i = 0; i < tenants.size(); i++) {
+            System.out.printf("Tenant %d: executed=%d, finalWeight=%s%n",
+                              tenants.get(i).id, usage.get(i), df.format(tenants.get(i).weight));
+        }
+        double utilization = (double) executed / totalTimeSlices;
+        System.out.printf("Time slices: %d, Executed tasks: %d, Idle slices: %d, CPU utilization: %s%n",
+                totalTimeSlices, executed, totalTimeSlices - executed, df.format(utilization));
+        
+    }
+
+    public static void main(String[] args) {
+
+        // Configurable parameters (can be passed via command line)
+        int n = 5;                       // Number of tenants (default: 5)
+        int totalTimeSlices = 1000;      // Total number of simulated time slices
+        int maxNewTasksPerSlice = 3;     // Max tasks a tenant may generate per time slice (0..max)
+        int adjustInterval = 50;         // Interval (in time slices) for weight adjustment
+        double smoothAlpha = 0.2;        // Smoothing factor alpha, 0.0–1.0
+        long seed = System.currentTimeMillis();  // Random seed (default: current time)
+
+        Random rng = new Random(seed);
+        System.out.printf(
+            "Start simulating: n=%d, timeSlices=%d, maxNewTasksPerSlice=%d, adjustInterval=%d, alpha=%.3f, seed=%d%n",
+            n, totalTimeSlices, maxNewTasksPerSlice, adjustInterval, smoothAlpha, seed
+        );
+
+        // Initialize tenants (weights initially set manually here)
+        List<Tenant> tenants = new ArrayList<>();
+        tenants.add(new Tenant(1, 0.2));
+        tenants.add(new Tenant(2, 0.1));
+        tenants.add(new Tenant(3, 0.4));
+        tenants.add(new Tenant(4, 0.05));
+        tenants.add(new Tenant(5, 0.25));
+        double[] initialWeight = new double[n];
+        for (int i = 0; i < n; i++) {
+            initialWeight[i] = tenants.get(i).weight;}
+        Scheduler scheduler = new Scheduler(tenants, rng);
+
+        // Global execution count (how many tasks each tenant executed)
+        List<Integer> usage = new ArrayList<>(Collections.nCopies(n, 0));
+        int executedTasks = 0;
+        int taskIdCounter = 0;
+
+        // Record usage in the most recent adjustment window
+        List<Integer> windowUsage = new ArrayList<>(Collections.nCopies(n, 0));
+        int windowCount = 0;
+        // Main simulation loop: for each time slice
+        for (int t = 1; t <= totalTimeSlices; t++) {
+            // Step 1: each tenant randomly generates new tasks (model D)
+            for (int i = 0; i < n; i++) {
+                int newTasks = rng.nextInt(maxNewTasksPerSlice + 1); // 0..maxNewTasksPerSlice
+                for (int k = 0; k < newTasks; k++) {
+                    tenants.get(i).queue.add(new Task(taskIdCounter++, tenants.get(i).id, 1));
+                }
+            }
+            // Step 2: scheduling (execute at most 1 task per time slice)
+            Task task = scheduler.selectTask();
+            if (task != null) {
+                int idx = task.tenantId - 1;
+                usage.set(idx, usage.get(idx) + 1);
+                windowUsage.set(idx, windowUsage.get(idx) + 1);
+                executedTasks++;
+            }
+            windowCount++;
+            // Step 3: adjust weights at the specified interval
+            if (t % adjustInterval == 0) {
+                adjustWeightsSmoothed(tenants, windowUsage, smoothAlpha, initialWeight);
+                // Print a snapshot of updated weights (optional)
+                double[] curW = scheduler.getWeights();
+                System.out.printf("t=%d adjusted weight: ", t);
+                for (int i = 0; i < curW.length; i++) {
+                    System.out.printf("T%d=%s ",
+                            tenants.get(i).id,
+                            new DecimalFormat("0.000").format(curW[i]));
+                }
+                System.out.println();
+                // Reset the window usage
+                for (int i = 0; i < n; i++) windowUsage.set(i, 0);
+                windowCount = 0;
+            }
+        }
+        // End of simulation — print final summary
+        printSummary(tenants, usage, executedTasks, totalTimeSlices);
+        System.out.printf("Jain Fairness: %.4f%n", computeFairness(usage));
+    }
+}
